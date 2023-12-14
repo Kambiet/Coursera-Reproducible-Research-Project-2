@@ -1,0 +1,280 @@
+---
+title: "Analysing The Most Harmful Climatic Shocks In The USA From 1950 to 2011"
+author: "Kambiet"
+date: "2023-12-14"
+output: html_document
+---
+
+## Synopsis
+
+This Report uses the 1950 to 2011 Storm Database of the U.S. National Oceanic and Atmospheric Administration (NOAA) to identify weather events that cause the highest economic and public health Harm(damages) to the US economy.
+Public health Harm are proxied using total fatalities(FATALITIES) and total injuries(INJURIES) per event type(EVTYPE) While economic Harm is proxied using property damage(PROPDMG) and crop damage(CROPDMG) by event type. 
+
+The most harmful event type for public health is `TORNADO`. `FLOOD` creates the most property damage, followed by `HURRICANETYPHOON` which also happens to be the most harmful event regarding crop damage
+
+##Data Processing
+```{r, echo = TRUE}
+#Loading Relevant Libraries 
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+#Loading and Exploring the NOAAdata 
+noaa <- read.csv("repdata_data_StormData.csv.bz2")
+
+dim(noaa)
+names(noaa)
+head(noaa)
+str(noaa)
+
+   
+#The field "EVTYPE" has "r nrow(distinct(select(noaa, EVTYPE)))" distinct values. Going through them, it seems some are summaries. Others have labels that start with spaces. There are some inconsistencies with uppercase/lowercase - lets just move everything to uppercase. I am also going to check for typos.
+
+  ##Processing of var(EVTYPE) 
+#For consistency, we will start by removing all white spaces on event types(EVTYPE) and then converting all into event type names into uppercase ("wind" to "WIND") using trimw() and toupper() functions:
+
+noaa$EVTYPE2 <- trimws(noaa$EVTYPE)
+noaa$EVTYPE2 <- toupper(noaa$EVTYPE2)
+
+#We then evaluate the total number of unique event types using n_distinct() or nrow(distinct()) on EVTYPE  
+nrow(distinct(select(noaa, EVTYPE2)))
+```
+
+Note that the new field EVTYPE2 has r nrow(distinct(select(noaa, EVTYPE2))), less than EVTYPE, so we are making progress.
+
+Next, remove any summary rows, and while we are at it, any NA rows (those with value "?"):
+we apply !grepl() coupled with a filter() function to extract only data points which are neither "summary" or "?" and then we re-evaluate the number of unique event types using n_distinct() or nrow(distinct()) on EVTYPE in line 53
+
+```{r, echo=TRUE}
+noaa2 <- filter(noaa, !grepl('summary', noaa$EVTYPE2, ignore.case=TRUE))
+noaa2 <- filter(noaa2, EVTYPE2 != '?')
+nrow(distinct(select(noaa2, EVTYPE2)))
+
+```
+
+The new dataset `noaa2` has only `r nrow(distinct(select(noaa2, EVTYPE2)))` distinct event types.
+
+
+```{r, echo=TRUE}
+#Arranging the resulting data: We sort the EVTYPE2 column especially given that sorting the field has the advantage of making the identification of typos in the data easier. (I.e points such as "AVALANCE" instead of "AVALANCHE")
+
+# NOTE: the code below will generate a long list of event types
+
+evtypes <- distinct(select(noaa2, EVTYPE2)) %>% arrange(EVTYPE2)
+head(evtypes)
+```
+
+Next, we explore the resulting list swiftly using a generic function `adist` to compare while assuming that a distance < 2 is a typo. We update the original event type with the match that has the most entries assuming that the typo is less common than the original value. 
+This does create a problem of `THUNDERSTORM WIND 50` being lumped together with `THUNDERSTORM WIND 60`. So, for this analysis, We remove all numbers from event types as well as numbers that start with a letter (e.g:`F0`, `G50` etc.) and parenthesis () too.
+We use the   gsub() and sub() function to remove all numbers from data points as highlighted below
+```{r, echo=TRUE}
+# We use gsub() function to remove data points with numbers or potential leading letter (I.e: '[A-Z]?[0-9]+')from event types by replacing them with nothing and no white spaces
+
+noaa2$EVTYPE3 <- gsub('[A-Z]?[0-9]+', '', noaa2$EVTYPE2)
+
+# We use the sub() to remove ' MPH' by replacing them with nothing and no white spaces
+noaa2$EVTYPE3 <- sub(' MPH', '', noaa2$EVTYPE3)
+
+# We use the gsub()remove any non-letter character from event types by replacing them with nothing and no white spaces
+noaa2$EVTYPE3 <- gsub('[^A-Z]', '', noaa2$EVTYPE3)
+
+#Exploring the new data set
+
+head(noaa2$EVTYPE3)
+
+```
+
+Next we update similar event types, using the most common one as the probably correct one:
+(NOTE: I didn't just create the whole matrix/vectorize, because R Studio kept crashing... therefore we loop!)
+
+```{r, echo=TRUE}
+evtypes <- distinct(select(noaa2, EVTYPE3)) %>% arrange(EVTYPE3)
+for (row in 1:(nrow(evtypes)-1)) {
+    left <- evtypes[row, 1]
+    right <- evtypes[row+1, 1]
+    distance <- adist(left, right)[1, 1]
+    if (distance < 2) {
+        nleft <- length(noaa2[noaa2$EVTYPE3 == left, 'EVTYPE3'])
+        nright <- length(noaa2[noaa2$EVTYPE3 == right, 'EVTYPE3'])
+        if (nleft > nright) {
+            noaa2$EVTYPE3[noaa2$EVTYPE3 == right] <- left
+            #print(c(right, length(noaa2[noaa2$EVTYPE3 == right, 'EVTYPE3'])))
+        }
+        else {
+            noaa2$EVTYPE3[noaa2$EVTYPE3 == left] <- right
+            #print(c(left, length(noaa2[noaa2$EVTYPE3 == left, 'EVTYPE3'])))
+        }
+    }
+}
+evtypes <- distinct(select(noaa2, EVTYPE3)) %>% arrange(EVTYPE3)
+head(noaa2$EVTYPE3)
+```
+
+It turns out that this approach is only a first stab - we'd have to actually define a smaller set of event types and a mapping to those types. At this stage the EVTYPE variable is ready for aanlysis. Time to look at the other variables that are necessary for our analysis
+
+Let us look at the other fields we'd like to analyse:
+
+```{r, echo=TRUE}
+#Adjusting the relevant columns to numeric using as.numeric() function for easy manipulation 
+
+noaa2$FATALITIES <- as.numeric(noaa2$FATALITIES)
+noaa2$INJURIES <- as.numeric(noaa2$INJURIES)
+noaa2$PROPDMG <- as.numeric(noaa2$PROPDMG)
+noaa2$CROPDMG <- as.numeric(noaa2$CROPDMG)
+
+noaa2$FATALITIES <- as.numeric(noaa2$FATALITIES)
+noaa2$INJURIES <- as.numeric(noaa2$INJURIES)
+```
+
+Going through the documentation, it seems as if the `PROPDMGEXP` and `CROPDMGEXP` fields contain an exponent to multiply the `PROPDMG` and `CROPDMG` values with. I need to clean this up since a couple of conventions are used:
+
+```{r, echo=TRUE}
+# We begin by adjusting PROPDMGEXP to character and then convert data points to uppercase and then delete all white spaces for consistency using as.character(), toupper() and the trimws() function.
+
+noaa2$PROPDMGEXP <- as.character(noaa2$PROPDMGEXP)
+noaa2$PROPDMGEXP <- toupper(noaa2$PROPDMGEXP)
+noaa2$PROPDMGEXP <- trimws(noaa2$PROPDMGEXP)
+
+# For consistency, we replace "?" and "-" and "+" and " " with "0". This step is very essential as it enable us to deal with invalid characters and NAs
+
+noaa2$PROPDMGEXP[noaa2$PROPDMGEXP %in% c("?", "-", "", "+")] <- "0"
+
+# We equally replace K, M, B, H with 3, 6, 9, 2 respectively. Thus making the column easier to manipulate mathematically
+
+noaa2$PROPDMGEXP[noaa2$PROPDMGEXP == "K"] <- "3"
+noaa2$PROPDMGEXP[noaa2$PROPDMGEXP == "M"] <- "6"
+noaa2$PROPDMGEXP[noaa2$PROPDMGEXP == "B"] <- "9"
+noaa2$PROPDMGEXP[noaa2$PROPDMGEXP == "H"] <- "2"
+noaa2$PROPDMGEXP <- as.numeric(noaa2$PROPDMGEXP)
+
+
+# Now we create a new field using mutate() function. This column multiplies the values for PROPDMG by (10 ^ PROPDMGEXP). The resulting variable (property.damage) highlights the value of property damages. 
+noaa2 <- mutate(noaa2, property.damage = PROPDMG * (10 ^ PROPDMGEXP))
+
+# repeat for crop damage
+# first all uppercase
+noaa2$CROPDMGEXP <- as.character(noaa2$PROPDMGEXP)
+noaa2$CROPDMGEXP <- toupper(noaa2$PROPDMGEXP)
+noaa2$CROPDMGEXP <- trimws(noaa2$PROPDMGEXP)
+
+# replace "?" and "-" and "+" and " " with "0"
+noaa2$CROPDMGEXP[noaa2$CROPDMGEXP %in% c("?", "-", "", "+")] <- "0"
+
+# replace K, M, B, H with 3, 6, 9, 2 respectively
+noaa2$CROPDMGEXP[noaa2$CROPDMGEXP == "K"] <- "3"
+noaa2$CROPDMGEXP[noaa2$CROPDMGEXP == "M"] <- "6"
+noaa2$CROPDMGEXP[noaa2$CROPDMGEXP == "B"] <- "9"
+noaa2$CROPDMGEXP[noaa2$CROPDMGEXP == "H"] <- "2"
+noaa2$CROPDMGEXP <- as.numeric(noaa2$CROPDMGEXP)
+
+
+# create new field with multiplied values
+noaa2 <- mutate(noaa2, crop.damage = CROPDMG * (10 ^ CROPDMGEXP))
+
+# next, let's just drop the fields we're not interested in:
+noaa3 <- select(noaa2, EVTYPE3, INJURIES, FATALITIES, property.damage, crop.damage)
+```
+
+## Results
+
+We are trying to answer tow questions:
+
+1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+2. Across the United States, which types of events have the greatest economic consequences?
+
+
+### Most harmful with respect to population health
+
+If population health is impaired by fatalities and injuries, which events have the highest count of fatalities?
+
+```{r, echo=TRUE}
+#Grouping, summarizing and arranging fatalities and assigning them to a variable called fatal. We then highlight the top 10 fatalities and assign them to a variable called top.fatal.
+
+fatal <- noaa3 %>% group_by(EVTYPE3) %>% summarize(total.fatalities=sum(FATALITIES)) %>%  
+    arrange(desc(total.fatalities))
+top.fatal <- head(fatal, n=10)
+top.fatal
+```
+
+Viewing the `TSTMWIND` event type, we can see shortcomings of the data cleaning step - future research could try to do a better job here, but a quick glance at the numbers suggests that the top three (TORNADO, EXCESSIVEHEAT and FLASHFLOOD) will not be altered.
+
+What events therefore cause the most injuries? 
+Let's use can use the same technique here:
+
+```{r, echo=TRUE}
+
+#Grouping, summarizing and arranging injuries and assigning them to a variable called injuries. We then highlight the top 10 injuries and assign them to a variable called top.injuries.
+injuries <- noaa3 %>% group_by(EVTYPE3) %>% summarize(total.injuries=sum(INJURIES)) %>%  
+    arrange(desc(total.injuries))
+top.injuries <- head(injuries, n=10)
+top.injuries
+
+```
+
+Here, again, shortcomings of my data cleaning step show up ("TSTMWIND").
+It is still clear, though, that `TORNADO` is the big bad event!
+
+Let's show this graphically:
+
+```{r, echo=TRUE}
+#Using ggplot() function to graph this results as two panels within the same figure, we set  par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7).
+
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.fatal$total.fatalities, names.arg=top.fatal$EVTYPE3, ylab= "Fatalities", las=3, main= "Fatalities by Event type")
+barplot(top.injuries$total.injuries, names.arg=top.injuries$EVTYPE3, ylab="Injuries", las=3, 
+        main= "Injuries by Event type")
+
+png("replot1.png")
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.fatal$total.fatalities, names.arg=top.fatal$EVTYPE3, ylab= "Fatalities", las=3, main= "Fatalities by Event type")
+barplot(top.injuries$total.injuries, names.arg=top.injuries$EVTYPE3, ylab="Injuries", las=3, 
+        main= "Injuries by Event type")
+dev.off()
+
+```
+
+### Most harmful with respect to the economy
+
+Next, we look at the cost of these events to the economy.
+We look at both property damage and damage to crops:
+
+```{r, echo=TRUE}
+
+#Grouping, summarizing and arranging property and assigning them to a variable called property. We then highlight the top 10 property damaged and assign them to a variable called top.property.
+property <- noaa3 %>% group_by(EVTYPE3) %>% summarize(total.property.damage=sum(property.damage)) %>%  
+    arrange(desc(total.property.damage))
+top.property <- head(property, n=10)
+top.property
+```
+
+```{r, echo=TRUE}
+#Grouping, summarizing and arranging crops and assigning them to a variable called crop. We then highlight the top 10 crop damaged and assign them to a variable called top.crop.
+crop <- noaa3 %>% group_by(EVTYPE3) %>% summarize(total.crop.damage=sum(crop.damage)) %>%  
+    arrange(desc(total.crop.damage))
+top.crop <- head(crop, n=10)
+top.crop
+```
+
+```{r, echo=TRUE}
+#Using ggplot() function to graph this results as two panels within the same figure, we set  par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7).
+
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.property$total.property.damage / 1000, names.arg=top.property$EVTYPE3, ylab='Property Damage (1000$)', las=3, main='Property Damage by Event type')
+barplot(top.crop$total.crop.damage / 1000, names.arg=top.crop$EVTYPE3, ylab='Crop Damage (1000$)', las=3, main='Crop Damage by Event type')
+png("replot2.png")
+par(mfrow=c(1, 2), mar = c(12, 4, 2, 2.5), cex=0.7)
+barplot(top.property$total.property.damage / 1000, names.arg=top.property$EVTYPE3, ylab='Property Damage (1000$)', las=3, main='Property Damage by Event type')
+barplot(top.crop$total.crop.damage / 1000, names.arg=top.crop$EVTYPE3, ylab='Crop Damage (1000$)', las=3, main='Crop Damage by Event type')
+
+dev.off()
+```
+
+We can see that `HURRICANE` and `HURRICANETYPHOON` are both the most harmful event types for crops. These probably could  even be lumped into a single event type `HURRICANE` (see data cleaning section).
+
+We can also see that `FLOOD` causes the most property damage, with `HURRICANETYPHOON` and `TORNADO` among the top 3 too!
+
+I would be interested in seeing how much these numbers change if I had time to reassign each event type to a smaller list (say, 20-30 types) by doing a more rigorous data cleaning.  
+#1 might not change, though.
+
+```
